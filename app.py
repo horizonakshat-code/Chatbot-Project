@@ -2,20 +2,21 @@ import os
 import tempfile
 
 import streamlit as st
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.document_loaders import UnstructuredHTMLLoader
-from langchain_chroma import Chroma
+from bs4 import BeautifulSoup
+
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_chroma import Chroma
 
 st.set_page_config(
-    page_title="Technical Document RAG Chatbot",
+    page_title="Technical Documentation RAG",
     page_icon="🤖",
     layout="wide"
 )
 
 st.title("🤖 Technical Documentation RAG Chatbot")
-st.write("Upload an HTML document and ask questions.")
+st.markdown("Upload an HTML document and chat with it.")
 
 api_key = st.sidebar.text_input(
     "OpenAI API Key",
@@ -27,32 +28,36 @@ uploaded_file = st.file_uploader(
     type=["html", "htm"]
 )
 
-if api_key:
-    os.environ["OPENAI_API_KEY"] = api_key
-
 if uploaded_file and api_key:
+
+    os.environ["OPENAI_API_KEY"] = api_key
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
         tmp.write(uploaded_file.read())
         html_path = tmp.name
 
-    loader = UnstructuredHTMLLoader(html_path)
-    documents = loader.load()
+    with open(html_path, "r", encoding="utf-8", errors="ignore") as f:
+        html = f.read()
+
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(separator="\n")
+
+    docs = [Document(page_content=text)]
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200
     )
 
-    docs = splitter.split_documents(documents)
+    split_docs = splitter.split_documents(docs)
 
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small"
     )
 
     vectorstore = Chroma.from_documents(
-        docs,
-        embeddings
+        documents=split_docs,
+        embedding=embeddings
     )
 
     retriever = vectorstore.as_retriever(
@@ -64,25 +69,31 @@ if uploaded_file and api_key:
         temperature=0
     )
 
-    qa = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=retriever,
-        chain_type="stuff"
-    )
+    question = st.chat_input("Ask something about the document")
 
-    question = st.text_input("Ask your question")
+    if question:
 
-    if st.button("Get Answer"):
+        with st.chat_message("user"):
+            st.write(question)
 
-        if question.strip():
+        docs = retriever.invoke(question)
 
-            with st.spinner("Thinking..."):
+        context = "\n\n".join([d.page_content for d in docs])
 
-                answer = qa.run(question)
+        prompt = f"""
+Answer ONLY from the context below.
 
-            st.success("Answer")
+Context:
+{context}
 
-            st.write(answer)
+Question:
+{question}
+"""
+
+        response = llm.invoke(prompt)
+
+        with st.chat_message("assistant"):
+            st.write(response.content)
 
 else:
     st.info("Upload an HTML file and enter your OpenAI API key.")
